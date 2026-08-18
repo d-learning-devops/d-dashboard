@@ -1,0 +1,128 @@
+name: "Build and Deploy Microservices to Azure Container Apps"
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  workflow_dispatch:
+    inputs:
+      target_app:
+        description: "Select specific app to deploy (or 'all')"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - search-app
+          - pdp-app
+          - bike-app
+          - content-app
+          - marketplace-app
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  determine-matrix:
+    name: "Setup Build Matrix"
+    runs-on: ubuntu-latest
+    outputs:
+      apps_matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Configure App Matrix
+        id: set-matrix
+        shell: bash
+        run: |
+          if [ "${{ github.event.inputs.target_app }}" != "" ] && [ "${{ github.event.inputs.target_app }}" != "all" ]; then
+            echo "matrix=[\"${{ github.event.inputs.target_app }}\"]" >> $GITHUB_OUTPUT
+          else
+            echo 'matrix=["search-app","pdp-app","bike-app","content-app","marketplace-app"]' >> $GITHUB_OUTPUT
+          fi
+
+  build-and-deploy:
+    name: "Deploy ${{ matrix.app }}"
+    needs: determine-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJson(needs.determine-matrix.outputs.apps_matrix) }}
+    env:
+      REGISTRY: ${{ vars.ACR_NAME }}.azurecr.io
+      IMAGE_TAG: ${{ github.sha }}
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Azure OIDC Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+
+      - name: Log in to Azure Container Registry (ACR)
+        shell: bash
+        run: |
+          az acr login --name ${{ vars.ACR_NAME }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./apps/${{ matrix.app }}
+          file: ./apps/${{ matrix.app }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ matrix.app }}:${{ env.IMAGE_TAG }}
+            ${{ env.REGISTRY }}/${{ matrix.app }}:latest
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ matrix.app }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ matrix.app }}:buildcache,mode=max
+
+      - name: Deploy Revision to Azure Container App
+        uses: azure/container-apps-deploy-action@v1
+        with:
+          containerAppName: ${{ matrix.app }}
+          resourceGroup: ${{ env.RESOURCE_GROUP }}
+          imageToDeploy: ${{ env.REGISTRY }}/${{ matrix.app }}:${{ env.IMAGE_TAG }}
+          containerName: ${{ matrix.app }}
+
+      - name: Verify Container App Health Status
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Verifying health status for ${{ matrix.app }}..."
+          
+          for attempt in {1..12}; do
+            STATE=$(az containerapp show \
+              --name "${{ matrix.app }}" \
+              --resource-group "${{ env.RESOURCE_GROUP }}" \
+              --query "properties.provisioningState" \
+              -o tsv)
+            
+            REPLICAS=$(az containerapp replica count \
+              --name "${{ matrix.app }}" \
+              --resource-group "${{ env.RESOURCE_GROUP }}" \
+              -o tsv 2>/dev/null || echo "0")
+            
+            echo "Attempt ${attempt}: ProvisioningState=${STATE}, ActiveReplicas=${REPLICAS}"
+            
+            if [[ "${STATE}" == "Succeeded" ]]; then
+              echo "${{ matrix.app }} deployment verified successfully."
+              break
+            fi
+            
+            if [[ "$attempt" -eq 12 ]]; then
+              echo "Error: ${{ matrix.app }} did not reach Succeeded state."
+              exit 1
+            fi
+            sleep 5
+          done
