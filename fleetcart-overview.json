@@ -1,0 +1,125 @@
+{
+  "title": "Fleet Cart Ops - Overview (POC)",
+  "uid": "fleetcart-overview-poc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["15s","30s","1m","5m"],
+    "time_options": ["15m","30m","1h","2h","6h","12h","1d","7d"]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "type": "custom",
+        "label": "Environment",
+        "query": "dev,qa,stg,prd",
+        "current": { "text": "prd", "value": "prd" },
+        "options": [
+          {"text":"dev","value":"dev"},
+          {"text":"qa","value":"qa"},
+          {"text":"stg","value":"stg"},
+          {"text":"prd","value":"prd"}
+        ]
+      },
+      {
+        "name": "container_app",
+        "type": "custom",
+        "label": "Container App",
+        "query": "search-app,pdp-app,bike-app,content-app,marketplace-app",
+        "current": { "text": "All", "value": "$__all" },
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Requests / min — $container_app ($environment)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "grafana-azure-monitor-datasource", "uid": "Azure Monitor" },
+      "targets": [
+        {
+          "azureMonitor": {
+            "metricNamespace": "Microsoft.App/containerApps",
+            "metricName": "Requests",
+            "aggregation": "Total",
+            "resourceGroup": "rg-fleetcart-$environment"
+          },
+          "queryType": "Azure Monitor"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "CPU Usage % — $container_app ($environment)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "grafana-azure-monitor-datasource", "uid": "Azure Monitor" },
+      "targets": [
+        {
+          "azureMonitor": {
+            "metricNamespace": "Microsoft.App/containerApps",
+            "metricName": "UsageNanoCores",
+            "aggregation": "Average",
+            "resourceGroup": "rg-fleetcart-$environment"
+          },
+          "queryType": "Azure Monitor"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Recent GitHub Actions Workflow Runs",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "Infinity" },
+      "targets": [
+        {
+          "type": "json",
+          "source": "url",
+          "url": "https://api.github.com/repos/<org>/<repo>/actions/runs?per_page=10",
+          "url_options": { "method": "GET" },
+          "root_selector": "workflow_runs",
+          "columns": [
+            { "selector": "name", "text": "Workflow", "type": "string" },
+            { "selector": "head_branch", "text": "Branch", "type": "string" },
+            { "selector": "conclusion", "text": "Result", "type": "string" },
+            { "selector": "run_started_at", "text": "Started", "type": "timestamp" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Cloudflare — Requests by Status (last window)",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "Infinity" },
+      "targets": [
+        {
+          "type": "json",
+          "source": "url",
+          "url": "https://api.cloudflare.com/client/v4/graphql",
+          "url_options": {
+            "method": "POST",
+            "body_type": "raw",
+            "body_content_type": "application/json",
+            "data": "{\"query\":\"query { viewer { zones(filter: {zoneTag: \\\"<zone_id>\\\"}) { httpRequests1hGroups(limit: 24) { dimensions { datetime } sum { requests } } } } }\"}"
+          },
+          "root_selector": "data.viewer.zones[0].httpRequests1hGroups",
+          "columns": [
+            { "selector": "dimensions.datetime", "text": "Time", "type": "timestamp" },
+            { "selector": "sum.requests", "text": "Requests", "type": "number" }
+          ]
+        }
+      ]
+    }
+  ]
+}
